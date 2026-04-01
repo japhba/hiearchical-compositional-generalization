@@ -1,0 +1,22 @@
+[project]
+name = "hiearchical-compositional-generalization"
+version = "0.1.0"
+description = "Compositional generalization in linear networks on hierarchical Brownian motion"
+requires-python = ">=3.11"
+dependencies = [
+    "jax[cuda12]",
+    "numpy",
+    "matplotlib",
+    "tqdm",
+    "ipykernel",
+    "ipympl",
+    "ipywidgets",
+    "scikit-learn",
+    "wandb",
+    "slurmcli",
+    "joblib",
+]
+
+[tool.uv.sources]
+slurmcli = { path = "/nfs/nhome/live/jbauer/slurmcli", editable = true }
+joblib = { path = "/nfs/nhome/live/jbauer/joblib", editable = true }
