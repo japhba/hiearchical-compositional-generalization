@@ -71,6 +71,7 @@ def logprob_y(
     kappa0: float,
     mup: bool = False,
     ntp: bool = True,
+    activation: str = "linear",
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Data negative log-likelihood (sign-flipped logprob_y).
 
@@ -85,7 +86,7 @@ def logprob_y(
     width = max(w.shape[1] for w in params)
     N_mup = width if mup else 1
 
-    mse = jnp.mean((forward(params, x, mup=mup, ntp=ntp) - y) ** 2)
+    mse = jnp.mean((forward(params, x, mup=mup, ntp=ntp, activation=activation) - y) ** 2)
     nll_data = mse * P * D_out / (kappa0 / N_mup)
     return nll_data, mse
 
@@ -99,6 +100,7 @@ def loss_fn(
     sigma: float = 1.0,
     ntp: bool = True,
     terms: str = "all",
+    activation: str = "linear",
 ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray]]:
     """Negative log-posterior:  -logprob = -logprob_y + (-logprob_prior).
 
@@ -112,7 +114,7 @@ def loss_fn(
     Returns:
         (scalar_loss, (mse, nll_prior))
     """
-    nll_data, mse = logprob_y(params, x, y, kappa0, mup=mup, ntp=ntp)
+    nll_data, mse = logprob_y(params, x, y, kappa0, mup=mup, ntp=ntp, activation=activation)
     nll_prior = logprob_prior(params, mup=mup, ntp=ntp, sigma=sigma)
 
     if terms == "all":

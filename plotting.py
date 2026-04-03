@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
@@ -60,7 +61,7 @@ def plot_loss_curves(curves_shallow: dict, curves_deep: dict, depth: int):
     return fig
 
 
-def _layer_hiddens(params, x, mup=False, ntp=True):
+def _layer_hiddens(params, x, mup=False, ntp=True, activation="linear"):
     """Return list of hidden representations at each layer."""
     hiddens = []
     h = x
@@ -68,13 +69,20 @@ def _layer_hiddens(params, x, mup=False, ntp=True):
         is_last = i == len(params) - 1
         W_eff = _rescale_weight(W, downscale=ntp, mup=mup, is_last=is_last)
         h = h @ W_eff.T
+        if activation != "linear" and not is_last:
+            if activation == "relu":
+                h = jax.nn.relu(h)
+            elif activation == "tanh":
+                h = jnp.tanh(h)
+            else:
+                raise ValueError(f"Unknown activation: {activation!r}")
         hiddens.append(h)
     return hiddens
 
 
-def plot_shallow_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False):
-    h_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp)[0]
-    h_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp)[0]
+def plot_shallow_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False, activation="linear"):
+    h_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp, activation=activation)[0]
+    h_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp, activation=activation)[0]
     K_train = _kernel(h_tr, cossim)
     K_test = _kernel(h_te, cossim)
     K_cross = _cross_kernel(h_tr, h_te, cossim)
@@ -88,9 +96,9 @@ def plot_shallow_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False):
     return fig
 
 
-def plot_deep_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False):
-    hs_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp)
-    hs_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp)
+def plot_deep_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False, activation="linear"):
+    hs_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp, activation=activation)
+    hs_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp, activation=activation)
     label = "cossim" if cossim else "dot"
     n_layers = len(hs_tr)
     fig, axes = plt.subplots(3, n_layers, figsize=(6 * n_layers, 14))
@@ -108,11 +116,11 @@ def plot_deep_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False):
     return fig
 
 
-def kernel_images(params, X_tr, X_te, mup=False, ntp=True, cossim=True):
+def kernel_images(params, X_tr, X_te, mup=False, ntp=True, cossim=True, activation="linear"):
     """Compute kernel matrices at each layer and return as dict of wandb.Image."""
     import wandb
-    hs_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp)
-    hs_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp)
+    hs_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp, activation=activation)
+    hs_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp, activation=activation)
     label = "cossim" if cossim else "dot"
     images = {}
     for col, (h_tr, h_te) in enumerate(zip(hs_tr, hs_te)):

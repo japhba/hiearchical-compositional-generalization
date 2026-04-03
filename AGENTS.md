@@ -1,0 +1,2 @@
+## Supply Chain Security
+- **uv `exclude-newer`**: A global 7-day minimum release age is configured in `~/.config/uv/uv.toml` (`exclude-newer = "7 days"`). This prevents installing any PyPI package version published less than 7 days ago, mitigating supply chain attacks. If `uv lock` or `uv add` fails to resolve and the only matching version is very new, this is likely why — wait or explicitly override with `--exclude-newer ""` after verifying the package is safe.

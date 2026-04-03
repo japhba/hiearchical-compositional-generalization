@@ -35,15 +35,22 @@ def init_deep(key: jax.Array, d_in: int, d_out: int, width: int = 1000, depth: i
     return params
 
 
-def forward(params: list[jnp.ndarray], x: jnp.ndarray, mup: bool = False, ntp: bool = True) -> jnp.ndarray:
-    """Linear forward pass.  NTP weights are rescaled to effective scale before use.
+def forward(params: list[jnp.ndarray], x: jnp.ndarray, mup: bool = False, ntp: bool = True, activation: str = "linear") -> jnp.ndarray:
+    """Forward pass with optional nonlinearity.
 
-    Mirrors recurrent_feature/tfl/network.py lines 51-53:
-        W_ = tree_map(rescale_weight(p, downscale=NTP, muP=muP), W)
+    Args:
+        activation: 'linear' (no nonlinearity) or 'relu' (ReLU after each hidden layer, not the last).
     """
     h = x
     for i, W in enumerate(params):
         is_last = i == len(params) - 1
         W_eff = _rescale_weight(W, downscale=ntp, mup=mup, is_last=is_last)
         h = h @ W_eff.T
+        if activation != "linear" and not is_last:
+            if activation == "relu":
+                h = jax.nn.relu(h)
+            elif activation == "tanh":
+                h = jnp.tanh(h)
+            else:
+                raise ValueError(f"Unknown activation: {activation!r}")
     return h
