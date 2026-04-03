@@ -39,6 +39,7 @@ def train(
     y_test: jnp.ndarray | None = None,
     mup: bool = False,
     ntp: bool = True,
+    phi: str | None = None,
     cossim: bool = True,
     run_name: str | None = None,
     config: dict | None = None,
@@ -85,12 +86,12 @@ def train(
     if x_test is not None:
         @jax.jit
         def eval_test(params):
-            _, (mse_test, _) = loss_fn(params, x_test, y_test, kappa0, mup=mup, sigma=sigma, ntp=ntp, terms="mse")
+            _, (mse_test, _) = loss_fn(params, x_test, y_test, kappa0, mup=mup, sigma=sigma, ntp=ntp, phi=phi, terms="mse")
             return mse_test
 
     def scan_body(params, _):
         (loss, (mse, nll)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-            params, x, y, kappa0, mup=mup, sigma=sigma, ntp=ntp, terms="all",
+            params, x, y, kappa0, mup=mup, sigma=sigma, ntp=ntp, phi=phi, terms="all",
         )
         params = [w - eta * g for w, g in zip(params, grads)]
         return params, (loss, mse, nll)
@@ -187,7 +188,7 @@ def train(
                 converged = True
 
         if chunk_idx % 100 == 0:
-            log_dict.update(kernel_images(params, x, x_test if x_test is not None else x, mup=mup, ntp=ntp, cossim=cossim))
+            log_dict.update(kernel_images(params, x, x_test if x_test is not None else x, mup=mup, ntp=ntp, phi=phi, cossim=cossim))
 
         wandb.log(log_dict)
         pbar.update(chunk_len * ds)

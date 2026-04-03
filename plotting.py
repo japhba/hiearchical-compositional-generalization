@@ -32,17 +32,60 @@ def _cross_kernel(X1, X2, cossim=False):
     return K
 
 
-def plot_data_kernels(X_train: np.ndarray, X_test: np.ndarray, cossim: bool = False):
+def _teacher_hiddens(teacher_params, x, beta=1.0):
+    """Return list of post-activation hiddens at each teacher layer."""
+    hiddens = []
+    h = x
+    for W in teacher_params:
+        h = jnp.tanh(beta * (h @ W.T))
+        hiddens.append(h)
+    return hiddens
+
+
+def plot_data_kernels(X_train: np.ndarray, X_test: np.ndarray, cossim: bool = False,
+                      Y_train: np.ndarray | None = None, Y_test: np.ndarray | None = None,
+                      teacher_params: list | None = None, beta: float = 1.0):
     X_train, X_test = jnp.array(X_train), jnp.array(X_test)
-    K_train = _kernel(X_train, cossim)
-    K_test = _kernel(X_test, cossim)
-    K_cross = _cross_kernel(X_train, X_test, cossim)
     label = "cossim" if cossim else "dot"
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for ax, K, title in zip(axes, [K_train, K_test, K_cross],
-                            [f"Train kernel ({label})", f"Test kernel ({label})", f"Train×Test kernel ({label})"]):
+    has_labels = Y_train is not None and Y_test is not None
+    has_teacher = teacher_params is not None
+    # Rows: input, [teacher L0..L_{n-2} intermediates], target
+    n_teacher = len(teacher_params) if has_teacher else 0
+    n_intermediate = max(0, n_teacher - 1)
+    has_targets = has_labels or has_teacher
+    nrows = 1 + n_intermediate + (1 if has_targets else 0)
+    fig, axes = plt.subplots(nrows, 3, figsize=(18, 5 * nrows), squeeze=False)
+    row = 0
+    # Row 0: input kernels
+    for ax, K, title in zip(axes[row],
+                            [_kernel(X_train, cossim), _kernel(X_test, cossim), _cross_kernel(X_train, X_test, cossim)],
+                            [f"X input ({label})", f"X input ({label})", f"X input cross ({label})"]):
         im = _imshow_centered(ax, K, title)
         fig.colorbar(im, ax=ax, shrink=0.8)
+    row += 1
+    # Teacher intermediate layers (all except final)
+    if has_teacher:
+        hs_tr = _teacher_hiddens(teacher_params, X_train, beta)
+        hs_te = _teacher_hiddens(teacher_params, X_test, beta)
+        for l, (h_tr, h_te) in enumerate(zip(hs_tr[:-1], hs_te[:-1])):
+            for ax, K, title in zip(axes[row],
+                                    [_kernel(h_tr, cossim), _kernel(h_te, cossim), _cross_kernel(h_tr, h_te, cossim)],
+                                    [f"Teacher L{l} ({label})", f"Teacher L{l} ({label})", f"Teacher L{l} cross ({label})"]):
+                im = _imshow_centered(ax, K, title)
+                fig.colorbar(im, ax=ax, shrink=0.8)
+            row += 1
+    # Last row: target kernels (= teacher final layer, or explicit Y)
+    if has_targets:
+        if has_teacher:
+            Y_tr, Y_te = hs_tr[-1], hs_te[-1]
+        else:
+            Y_tr, Y_te = jnp.array(Y_train), jnp.array(Y_test)
+        for ax, K, title in zip(axes[row],
+                                [_kernel(Y_tr, cossim), _kernel(Y_te, cossim), _cross_kernel(Y_tr, Y_te, cossim)],
+                                [f"Target ({label})", f"Target ({label})", f"Target cross ({label})"]):
+            im = _imshow_centered(ax, K, title)
+            fig.colorbar(im, ax=ax, shrink=0.8)
+    fig.tight_layout()
     return fig
 
 
@@ -60,21 +103,25 @@ def plot_loss_curves(curves_shallow: dict, curves_deep: dict, depth: int):
     return fig
 
 
-def _layer_hiddens(params, x, mup=False, ntp=True):
+def _layer_hiddens(params, x, mup=False, ntp=True, phi=None):
     """Return list of hidden representations at each layer."""
+    from network import PHI_REGISTRY
+    phi_fn = PHI_REGISTRY[phi] if phi is not None else None
     hiddens = []
     h = x
     for i, W in enumerate(params):
         is_last = i == len(params) - 1
         W_eff = _rescale_weight(W, downscale=ntp, mup=mup, is_last=is_last)
         h = h @ W_eff.T
+        if phi_fn is not None and not is_last:
+            h = phi_fn(h)
         hiddens.append(h)
     return hiddens
 
 
-def plot_shallow_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False):
-    h_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp)[0]
-    h_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp)[0]
+def plot_shallow_kernels(params, X_tr, X_te, mup=False, ntp=True, phi=None, cossim=False):
+    h_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp, phi=phi)[0]
+    h_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp, phi=phi)[0]
     K_train = _kernel(h_tr, cossim)
     K_test = _kernel(h_te, cossim)
     K_cross = _cross_kernel(h_tr, h_te, cossim)
@@ -88,9 +135,9 @@ def plot_shallow_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False):
     return fig
 
 
-def plot_deep_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False):
-    hs_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp)
-    hs_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp)
+def plot_deep_kernels(params, X_tr, X_te, mup=False, ntp=True, phi=None, cossim=False):
+    hs_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp, phi=phi)
+    hs_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp, phi=phi)
     label = "cossim" if cossim else "dot"
     n_layers = len(hs_tr)
     fig, axes = plt.subplots(3, n_layers, figsize=(6 * n_layers, 14))
@@ -108,11 +155,11 @@ def plot_deep_kernels(params, X_tr, X_te, mup=False, ntp=True, cossim=False):
     return fig
 
 
-def kernel_images(params, X_tr, X_te, mup=False, ntp=True, cossim=True):
+def kernel_images(params, X_tr, X_te, mup=False, ntp=True, phi=None, cossim=True):
     """Compute kernel matrices at each layer and return as dict of wandb.Image."""
     import wandb
-    hs_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp)
-    hs_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp)
+    hs_tr = _layer_hiddens(params, X_tr, mup=mup, ntp=ntp, phi=phi)
+    hs_te = _layer_hiddens(params, X_te, mup=mup, ntp=ntp, phi=phi)
     label = "cossim" if cossim else "dot"
     images = {}
     for col, (h_tr, h_te) in enumerate(zip(hs_tr, hs_te)):

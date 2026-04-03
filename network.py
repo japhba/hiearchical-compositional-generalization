@@ -1,3 +1,5 @@
+from typing import Callable
+
 import jax
 import jax.numpy as jnp
 
@@ -15,6 +17,14 @@ def _rescale_weight(w: jnp.ndarray, downscale: bool, mup: bool, is_last: bool) -
     fan_in = w.shape[1]
     gamma_scaling = 2 if (mup and is_last and w.shape[0] == 1) else 1
     return w * (fan_in ** gamma_scaling) ** -0.5
+
+
+PHI_REGISTRY: dict[str, Callable] = {
+    "relu": jax.nn.relu,
+    "tanh": jnp.tanh,
+    "gelu": jax.nn.gelu,
+    "silu": jax.nn.silu,
+}
 
 
 def init_shallow(key: jax.Array, d_in: int, d_out: int, sigma: float = 1.0) -> list[jnp.ndarray]:
@@ -35,15 +45,24 @@ def init_deep(key: jax.Array, d_in: int, d_out: int, width: int = 1000, depth: i
     return params
 
 
-def forward(params: list[jnp.ndarray], x: jnp.ndarray, mup: bool = False, ntp: bool = True) -> jnp.ndarray:
-    """Linear forward pass.  NTP weights are rescaled to effective scale before use.
+def forward(
+    params: list[jnp.ndarray],
+    x: jnp.ndarray,
+    mup: bool = False,
+    ntp: bool = True,
+    phi: str | None = None,
+) -> jnp.ndarray:
+    """Forward pass with optional nonlinearity between hidden layers.
 
-    Mirrors recurrent_feature/tfl/network.py lines 51-53:
-        W_ = tree_map(rescale_weight(p, downscale=NTP, muP=muP), W)
+    NTP weights are rescaled to effective scale before use.
+    `phi` is applied after every layer except the last (readout stays linear).
     """
+    phi_fn = PHI_REGISTRY[phi] if phi is not None else None
     h = x
     for i, W in enumerate(params):
         is_last = i == len(params) - 1
         W_eff = _rescale_weight(W, downscale=ntp, mup=mup, is_last=is_last)
         h = h @ W_eff.T
+        if phi_fn is not None and not is_last:
+            h = phi_fn(h)
     return h
