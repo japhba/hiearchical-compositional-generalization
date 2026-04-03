@@ -72,6 +72,7 @@ def train(
             "log_every": log_every,
             "mup": mup,
             "ntp": ntp,
+            "phi": phi,
             **(config or {}),
         },
         reinit=True,
@@ -79,9 +80,9 @@ def train(
     wandb.define_metric("s")
     wandb.define_metric("*", step_metric="s")
 
-    assert jax.devices()[0].platform == "gpu", f"Expected GPU, got {jax.devices()[0].platform}"
+    platform = jax.devices()[0].platform
     param_devices = {f"W{i}": w.devices() for i, w in enumerate(params)}
-    print(f"Training with ds={ds:.2e}, s_max={s_max:.1f}, eta={eta:.2e}, max_steps={max_steps} | x: {x.devices()}, y: {y.devices()}, params: {param_devices}")
+    print(f"Training on {platform} with ds={ds:.2e}, s_max={s_max:.1f}, eta={eta:.2e}, max_steps={max_steps} | x: {x.devices()}, y: {y.devices()}, params: {param_devices}")
 
     if x_test is not None:
         @jax.jit
