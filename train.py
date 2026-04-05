@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 
 import jax
 import jax.numpy as jnp
@@ -8,7 +9,7 @@ import wandb
 from tqdm.auto import tqdm
 
 from network_aux import get_eta, loss_fn
-from plotting import kernel_images
+from plotting import kernel_images, _layer_hiddens, _kernel
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,40 @@ def _ols_slope(log_t: np.ndarray, log_l: np.ndarray) -> float:
     t_mean = log_t.mean()
     l_mean = log_l.mean()
     return float(np.sum((log_t - t_mean) * (log_l - l_mean)) / (np.sum((log_t - t_mean) ** 2) + 1e-30))
+
+
+def _eigvec_alignment(params, x, eigvecs, mup, ntp, phi):
+    """Compute v_i^T K_l v_i for each layer l and eigenvector i.
+
+    Returns dict of scalar metrics AND a wandb line plot of alignment vs layer.
+    """
+    import matplotlib.pyplot as plt
+    hiddens = _layer_hiddens(params, x, mup=mup, ntp=ntp, phi=phi)
+    n_ev = eigvecs.shape[1]
+    n_layers = len(hiddens)
+    alignment = np.zeros((n_layers, n_ev))
+    scores = {}
+    for li, h in enumerate(hiddens):
+        K = np.array(_kernel(h, cossim=True))
+        for i in range(n_ev):
+            v = eigvecs[:, i]
+            val = float(v @ K @ v)
+            alignment[li, i] = val
+            scores[f"eigalign/L{li+1}_v{i}"] = val
+
+    # Layer-vs-alignment figure
+    fig, ax = plt.subplots(figsize=(6, 4))
+    colors = plt.cm.Spectral(np.linspace(0, 1, n_ev))
+    layers = np.arange(1, n_layers + 1)
+    for i in range(n_ev):
+        ax.plot(layers, alignment[:, i], "o-", color=colors[i], markersize=4, label=f"v{i}")
+    ax.set(xlabel="Layer", ylabel="$v_i^T K_l v_i$")
+    ax.axhline(0, color="gray", ls="--", lw=0.5)
+    ax.legend(fontsize=6, ncol=2)
+    fig.tight_layout()
+    scores["eigalign/layer_profile"] = wandb.Image(fig)
+    plt.close(fig)
+    return scores
 
 
 def train(
@@ -41,6 +76,7 @@ def train(
     ntp: bool = True,
     phi: str | None = None,
     cossim: bool = True,
+    eigvec_basis: np.ndarray | None = None,
     run_name: str | None = None,
     config: dict | None = None,
 ) -> tuple[list[jnp.ndarray], dict]:
@@ -49,6 +85,9 @@ def train(
     Uses jax.lax.scan to fuse `log_every` steps on GPU per host sync.
     `scan_unroll` controls XLA unrolling depth (small constant for fast
     compile + pipelining; independent of `log_every`).
+
+    If `eigvec_basis` is provided (n_patterns, n_eigvecs), logs per-layer
+    eigenvector alignment to wandb every 100 chunks.
     """
     max_steps = int(s_max / ds)
     eta = get_eta(params, x, y, kappa0, mup=mup, ntp=ntp, ds=ds)
@@ -58,21 +97,12 @@ def train(
         entity="japhba-personal",
         name=run_name,
         config={
-            "kappa0": kappa0,
-            "ds": ds,
-            "s_max": s_max,
-            "eta": eta,
-            "sigma": sigma,
-            "max_steps": max_steps,
-            "ema_beta": ema_beta,
-            "slope_frac": slope_frac,
-            "slope_threshold": slope_threshold,
-            "warmup_patience": warmup_patience,
-            "stop_patience": stop_patience,
-            "log_every": log_every,
-            "mup": mup,
-            "ntp": ntp,
-            "phi": phi,
+            "kappa0": kappa0, "ds": ds, "s_max": s_max, "eta": eta,
+            "sigma": sigma, "max_steps": max_steps, "ema_beta": ema_beta,
+            "slope_frac": slope_frac, "slope_threshold": slope_threshold,
+            "warmup_patience": warmup_patience, "stop_patience": stop_patience,
+            "log_every": log_every, "scan_unroll": scan_unroll,
+            "mup": mup, "ntp": ntp, "phi": phi,
             **(config or {}),
         },
         reinit=True,
@@ -104,24 +134,19 @@ def train(
     n_chunks = max_steps // log_every
     remainder = max_steps % log_every
 
-    losses = []
-    mse_train_curve = []
-    mse_test_curve = []
-    s_curve = []
+    mse_train_curve, mse_test_curve, s_curve, losses = [], [], [], []
     ema = None
     slope = float("nan")
     slope_test = float("nan")
     flat_count = 0
     converged = False
-    all_log_s = []
-    all_log_ema = []
-    all_log_mse_test = []
+    all_log_s, all_log_ema, all_log_mse_test = [], [], []
     pbar = tqdm(total=s_max, desc="Training", unit="s", bar_format="{l_bar}{bar}| {n:.2f}/{total:.2f}s [{elapsed}<{remaining}, {rate_fmt}{postfix}]")
     step_offset = 0
+    t_prev = time.monotonic()
     for chunk_idx in range(n_chunks + (1 if remainder else 0)):
         is_last_chunk = chunk_idx == n_chunks  # remainder chunk
         if is_last_chunk:
-            # JIT a smaller scan for the leftover steps
             @jax.jit
             def scan_remainder(params):
                 return jax.lax.scan(scan_body, params, None, length=remainder, unroll=min(scan_unroll, remainder))
@@ -155,11 +180,16 @@ def train(
         if s > ds and ema > 0:
             all_log_s.append(math.log(s))
             all_log_ema.append(math.log(ema))
+
+        t_now = time.monotonic()
+        dt = t_now - t_prev
+        t_prev = t_now
+        it_per_second = chunk_len / dt if dt > 0 else float("inf")
         log_dict = {
             "loss": loss_val, "mse": mse_val, "nll_prior": nll_val,
             "log_mse": math.log(mse_val) if mse_val > 0 else float("-inf"),
             "log_nll": math.log(nll_val) if nll_val > 0 else float("-inf"),
-            "ema_loss": ema, "s": s,
+            "ema_loss": ema, "s": s, "it_per_second": it_per_second,
         }
         s_curve.append(s)
         mse_train_curve.append(mse_val)
@@ -190,6 +220,8 @@ def train(
 
         if chunk_idx % 100 == 0:
             log_dict.update(kernel_images(params, x, x_test if x_test is not None else x, mup=mup, ntp=ntp, phi=phi, cossim=cossim))
+            if eigvec_basis is not None:
+                log_dict.update(_eigvec_alignment(params, x, eigvec_basis, mup=mup, ntp=ntp, phi=phi))
 
         wandb.log(log_dict)
         pbar.update(chunk_len * ds)
